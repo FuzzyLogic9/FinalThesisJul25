@@ -20,8 +20,9 @@ stanza.download('en')
 stanza_pipeline = stanza.Pipeline('en', processors='tokenize,sentiment', use_gpu=torch.cuda.is_available())
 
 # ==================== MISTRAL SETUP ====================
-#C:\Users\fzkar\Main_Thesis_Experiments\NLP_LLMs\LLM_Libraries
-mistral_model_path = "C:/Users/fzkar/Main_Thesis_Experiments/NLP_LLMs/LLM_Libraries/Mistral-7B-v0.1"
+mistral_model_path = "C:/Users/GPUWIN-1/Mistral-7B-v0.1"
+#C:/FuzzyNov2024/mistral7b_finetuned_ksev_lora
+#C:/Users/GPUWIN-1/Mistral-7B-v0.1
 mistral_tokenizer = AutoTokenizer.from_pretrained(mistral_model_path)
 mistral_tokenizer.pad_token = mistral_tokenizer.eos_token
 
@@ -34,7 +35,7 @@ mistral_model.eval()
 torch.cuda.empty_cache()
 
 # ==================== HATEBERT SETUP ====================
-hatebert_path = "C:/Users/fzkar/Main_Thesis_Experiments/NLP_LLMs/LLM_Libraries/hatebert_finetuned"
+hatebert_path = "C:/FuzzyNov2024/hatebert_finetuned"
 hatebert_tokenizer = AutoTokenizer.from_pretrained(hatebert_path)
 hatebert_model = AutoModelForSequenceClassification.from_pretrained(hatebert_path).to(device)
 hatebert_model.eval()
@@ -123,13 +124,13 @@ def improved_enrich_prompt(prompt, keywords):
     return f"{prompt}\nYou must include and respond to at least two of the following terms: {', '.join(keywords[:5])}\nStyle Guidance: Use sarcasm, insults, or accusatory tone without physical threats."
 
 # ==================== TOXIC-ONLY GENERATION ====================
-base_path = "C:/Users/fzkar/Main_Thesis_Experiments/NLP_LLMs/"
-reviews_df = pd.read_csv(base_path + "GPT_in/group_one_reviews_snap.csv")
-target_levels_df = pd.read_csv(base_path + "GPT_in/target_levels_snap.csv")
+base_path = "C:/FuzzyNov2024/toxicity_project/final_code_data/"
+reviews_df = pd.read_csv(base_path + "group_zero_reviews.csv")
+target_levels_df = pd.read_csv(base_path + "target_levels.csv")
 target_map = dict(zip(target_levels_df.page_id, target_levels_df.Level))
 
-text_only_toxic_file = base_path + "GPT_out/Mistral/MISTRAL_Snap/G1/text_output_escalated_MISTRAL_G1_OT_Sep25_snap.csv"
-scores_only_toxic_file = base_path + "GPT_out/Mistral/MISTRAL_Snap/score_output_escalated_MISTRAL_G1_OT_Sep25_snap.csv"
+text_only_toxic_file = base_path + "MISTRAL_II/G0/text_output_escalated_MISTRAL_G0_OT_Sep25.csv"
+scores_only_toxic_file = base_path + "MISTRAL_II/G0/score_output_escalated_MISTRAL_G0_OT_Sep25.csv"
 
 all_rows = []
 start_time = datetime.now()
@@ -189,7 +190,7 @@ scores_df = pd.concat([result_df[['page_id', 'level']], batch_score_texts(result
 scores_df.to_csv(scores_only_toxic_file, index=False)
 
 end_time = datetime.now()
-with open(base_path + "GPT_out/Mistral/MISTRAL_Snap/G1/generation_summary_mistral_g1_ot_Sep25_snap.txt", "a", encoding="utf-8") as f:
+with open(base_path + "MISTRAL_II/G0/generation_summary_mistral_g0_ot.txt", "a", encoding="utf-8") as f:
     f.write(f"Toxicity-Only Generation Start Time: {start_time}\n")
     f.write(f"Toxicity-Only Generation End Time: {end_time}\n")
     f.write(f"Duration: {end_time - start_time}\n")

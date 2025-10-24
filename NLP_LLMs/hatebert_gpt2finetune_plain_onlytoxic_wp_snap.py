@@ -9,7 +9,6 @@ import numpy as np
 from textblob import TextBlob
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import stanza
-from pattern3.en import sentiment as pattern_sentiment
 from tqdm import tqdm
 from datetime import datetime
 import re
@@ -22,17 +21,15 @@ print("Using device:", device)
 stanza.download('en')
 stanza_pipeline = stanza.Pipeline('en', processors='tokenize,sentiment', use_gpu=torch.cuda.is_available())
 
-mistral_model_path = "C:/Users/GPUWIN-1/Mistral-7B-v0.1"
-mistral_tokenizer = AutoTokenizer.from_pretrained(mistral_model_path)
-mistral_tokenizer.pad_token = mistral_tokenizer.eos_token
-mistral_model = AutoModelForCausalLM.from_pretrained(
-    mistral_model_path,
-    torch_dtype=torch.float16,
-    device_map="auto"
-)
-mistral_model.eval()
+# ✅ Load fine-tuned GPT-2 model
+gpt2_model_path = "C:/FuzzyNov2024/gpt2_finetuned_clean_KSEV"
+gpt2_tokenizer = AutoTokenizer.from_pretrained(gpt2_model_path)
+gpt2_tokenizer.pad_token = gpt2_tokenizer.eos_token
+gpt2_model = AutoModelForCausalLM.from_pretrained(gpt2_model_path).to(device)
+gpt2_model.eval()
 torch.cuda.empty_cache()
 
+# ✅ Load HateBERT model for scoring
 hatebert_path = "C:/FuzzyNov2024/hatebert_finetuned"
 hatebert_tokenizer = AutoTokenizer.from_pretrained(hatebert_path)
 hatebert_model = AutoModelForSequenceClassification.from_pretrained(hatebert_path).to(device)
@@ -55,7 +52,7 @@ def keyword_overlap(keywords, response, min_match=2):
     return sum(1 for k in keywords if k in response_words) >= min_match
 
 def batch_score_texts(texts):
-    hate_scores, vader_scores, tb_scores, stanza_scores, pattern_scores = [], [], [], [], []
+    hate_scores, vader_scores, tb_scores, stanza_scores = [], [], [], []
     batch_size = 32
 
     for i in range(0, len(texts), batch_size):
@@ -78,10 +75,6 @@ def batch_score_texts(texts):
                 stanza_scores.append(doc.sentences[0].sentiment if doc.sentences else 1)
             except:
                 stanza_scores.append(1)
-            try:
-                pattern_scores.append(pattern_sentiment(t))
-            except:
-                pattern_scores.append((0.0, 0.0))
 
     return pd.DataFrame({
         'hatebert_score': hate_scores,
@@ -91,33 +84,41 @@ def batch_score_texts(texts):
         'compound': [s['compound'] for s in vader_scores],
         'polarity': [s[0] for s in tb_scores],
         'subjectivity': [s[1] for s in tb_scores],
-        'stanza_sentiment': stanza_scores,
-        'pattern_polarity': [s[0] for s in pattern_scores],
-        'pattern_subjectivity': [s[1] for s in pattern_scores]
+        'stanza_sentiment': stanza_scores
     })
 
 def generate_text(prompt, max_new_tokens=None):
     if max_new_tokens is None:
-        max_new_tokens = random.randint(15, 30)
-    inputs = mistral_tokenizer(prompt, return_tensors="pt", truncation=True, padding=True, max_length=512)
+        max_new_tokens = random.randint(20, 40)
+
+    # Properly formatted prompt (only include special tokens at the front, not at the end)
+    formatted_prompt = f"<|prompt|> {prompt.strip()} <|response|>"
+
+    inputs = gpt2_tokenizer(formatted_prompt, return_tensors="pt", truncation=True, padding=True, max_length=512)
     inputs = {k: v.to(device) for k, v in inputs.items()}
-    input_len = inputs["input_ids"].shape[1]
-    max_len = getattr(mistral_model.config, "n_positions", getattr(mistral_model.config, "max_position_embeddings", 1024))
-    if input_len + max_new_tokens > max_len:
-        inputs["input_ids"] = inputs["input_ids"][:, -max_len + max_new_tokens:]
+
+    # Generate response without repeating prompt
     with torch.no_grad():
-        output = mistral_model.generate(
-            **inputs,
+        output_ids = gpt2_model.generate(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
             max_new_tokens=max_new_tokens,
             do_sample=True,
             temperature=1.7,
             top_k=40,
             top_p=0.85,
             repetition_penalty=1.8,
-            pad_token_id=mistral_tokenizer.pad_token_id,
-            eos_token_id=mistral_tokenizer.eos_token_id
+            pad_token_id=gpt2_tokenizer.pad_token_id,
+            eos_token_id=gpt2_tokenizer.eos_token_id,
         )
-    return mistral_tokenizer.decode(output[0], skip_special_tokens=True).replace(prompt, '').strip()
+
+    full_text = gpt2_tokenizer.decode(output_ids[0], skip_special_tokens=True)
+
+    # Strip prompt to get only the new part after <|response|>
+    if "<|response|>" in full_text:
+        return full_text.split("<|response|>", 1)[-1].strip()
+    else:
+        return full_text.strip()
 
 def clean_generation(text):
     text = re.sub(r"--\\s*(escalate|respond).*?(--|$)", "", text, flags=re.IGNORECASE)
@@ -128,12 +129,12 @@ def improved_enrich_prompt(prompt, keywords):
 
 # ==================== TOXIC-ONLY GENERATION ====================
 base_path = "C:/FuzzyNov2024/toxicity_project/final_code_data/"
-reviews_df = pd.read_csv(base_path + "group_one_reviews.csv")
+reviews_df = pd.read_csv(base_path + "group_zero_reviews.csv")
 target_levels_df = pd.read_csv(base_path + "target_levels.csv")
 target_map = dict(zip(target_levels_df.page_id, target_levels_df.Level))
 
-text_only_toxic_file = base_path + "text_output_escalated_MISTRAL_G1_OT.csv"
-scores_only_toxic_file = base_path + "score_output_escalated_MISTRAL_G1_OT.csv"
+text_only_toxic_file = base_path + "GPT2/text_output_escalated_GPT2_FT_G0_OT.csv"
+scores_only_toxic_file = base_path + "GPT2/score_output_escalated_GPT2_FT_G0_OT.csv"
 
 all_rows = []
 start_time = datetime.now()
@@ -171,7 +172,8 @@ for _, row in tqdm(reviews_df.iterrows(), total=len(reviews_df)):
                 break
 
         if not toxic_generated:
-            fallback = clean_generation(generate_text(f"React in a harsh, sarcastic, or rude way to this comment: {original}", 25))
+            fallback = clean_generation(generate_text(
+                f"React in a toxic, attacking, aggressive, hateful, harsh or rude way to this comment: {original}", 25))
             toxic_variants.append(fallback)
             all_rows.append({
                 'page_id': page_id, 'level': lvl, 'original': original if lvl == 1 else '',
@@ -182,14 +184,15 @@ for _, row in tqdm(reviews_df.iterrows(), total=len(reviews_df)):
 
 result_df = pd.DataFrame(all_rows)
 result_df.to_csv(text_only_toxic_file, index=False)
+
 result_df['text'] = result_df['toxic']
 scores_df = pd.concat([result_df[['page_id', 'level']], batch_score_texts(result_df['text'].tolist())], axis=1)
 scores_df.to_csv(scores_only_toxic_file, index=False)
 
 end_time = datetime.now()
-with open(base_path + "generation_summary_ot.txt", "a", encoding="utf-8") as f:
+with open(base_path + "GPT2/generation_summary_gpt2_g0_ft_ot.txt", "a", encoding="utf-8") as f:
     f.write(f"Toxicity-Only Generation Start Time: {start_time}\n")
     f.write(f"Toxicity-Only Generation End Time: {end_time}\n")
     f.write(f"Duration: {end_time - start_time}\n")
 
-print("\u2705 Saved toxicity-only responses with batch scoring.")
+print("✅ Saved toxicity-only responses with batch scoring.")

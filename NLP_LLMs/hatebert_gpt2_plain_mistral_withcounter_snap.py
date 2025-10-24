@@ -9,7 +9,6 @@ import numpy as np
 from textblob import TextBlob
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import stanza
-from pattern3.en import sentiment as pattern_sentiment
 from tqdm import tqdm
 from datetime import datetime
 import re
@@ -55,7 +54,7 @@ def keyword_overlap(keywords, response, min_match=2):
     return sum(1 for k in keywords if k in response_words) >= min_match
 
 def batch_score_texts(texts):
-    hate_scores, vader_scores, tb_scores, stanza_scores, pattern_scores = [], [], [], [], []
+    hate_scores, vader_scores, tb_scores, stanza_scores = [], [], [], []
     batch_size = 32
 
     for i in range(0, len(texts), batch_size):
@@ -78,10 +77,6 @@ def batch_score_texts(texts):
                 stanza_scores.append(doc.sentences[0].sentiment if doc.sentences else 1)
             except:
                 stanza_scores.append(1)
-            try:
-                pattern_scores.append(pattern_sentiment(t))
-            except:
-                pattern_scores.append((0.0, 0.0))
 
     return pd.DataFrame({
         'hatebert_score': hate_scores,
@@ -91,9 +86,7 @@ def batch_score_texts(texts):
         'compound': [s['compound'] for s in vader_scores],
         'polarity': [s[0] for s in tb_scores],
         'subjectivity': [s[1] for s in tb_scores],
-        'stanza_sentiment': stanza_scores,
-        'pattern_polarity': [s[0] for s in pattern_scores],
-        'pattern_subjectivity': [s[1] for s in pattern_scores]
+        'stanza_sentiment': stanza_scores
     })
 
 def generate_text(prompt, max_new_tokens=None):
@@ -123,22 +116,30 @@ def clean_generation(text):
     text = re.sub(r"--\\s*(escalate|respond).*?(--|$)", "", text, flags=re.IGNORECASE)
     return re.sub(r"[^\w\s.,!?'-]", "", text).strip()
 
-def improved_enrich_prompt(prompt, keywords):
-    return f"{prompt}\nYou must include and respond to at least two of the following terms: {', '.join(keywords[:5])}\nStyle Guidance: Use sarcasm, insults, or accusatory tone without physical threats."
+def improved_enrich_prompt(prompt, keywords, tone="neutral"):
+    tone_guidance = {
+        "toxic": "Use sarcasm, insults, or accusatory tone without physical threats.",
+        "counter": "Use empathy, understanding, and non-confrontational tone."
+    }
+    style = tone_guidance.get(tone, "")
+    return f"{prompt}\nYou must include and respond to at least two of the following terms: {', '.join(keywords[:5])}\nStyle Guidance: {style}"
 
-# ==================== TOXIC-ONLY GENERATION ====================
+# ==================== MAIN GENERATION ====================
 base_path = "C:/FuzzyNov2024/toxicity_project/final_code_data/"
-reviews_df = pd.read_csv(base_path + "group_one_reviews.csv")
-target_levels_df = pd.read_csv(base_path + "target_levels.csv")
+reviews_df = pd.read_csv(base_path + "group_one_reviews_snap.csv")
+target_levels_df = pd.read_csv(base_path + "target_levels_snap.csv")
 target_map = dict(zip(target_levels_df.page_id, target_levels_df.Level))
 
-text_only_toxic_file = base_path + "text_output_escalated_MISTRAL_G1_OT.csv"
-scores_only_toxic_file = base_path + "score_output_escalated_MISTRAL_G1_OT.csv"
+text_only_toxic_file = base_path + "text_output_escalated_MISTRAL_G1_WC_snap.csv"
+scores_only_toxic_file = base_path + "score_output_escalated_MISTRAL_G1_WC_snap.csv"
+text_only_counter_file = base_path + "text_output_counter_MISTRAL_G1_WC_snap.csv"
+scores_only_counter_file = base_path + "score_output_counter_MISTRAL_G1_WC_snap.csv"
 
-all_rows = []
+all_rows, counter_rows = [], []
 start_time = datetime.now()
 
 id_pattern = re.compile(r"\b\d{5,}\b|votes?[-:]|comments?", re.IGNORECASE)
+banned_words = {'cunt', 'retard', 'faggot', 'bitch', 'slut'}
 
 for _, row in tqdm(reviews_df.iterrows(), total=len(reviews_df)):
     page_id = row['page_id']
@@ -147,17 +148,18 @@ for _, row in tqdm(reviews_df.iterrows(), total=len(reviews_df)):
 
     orig_keywords = extract_keywords(original)
     toxic_variants = [original]
+    counter_variants = []
 
     for lvl in range(1, level + 1):
         n_context = max(1, min(lvl + 2, 5))
-        combined_pool = [original] + toxic_variants[-2:]
+        combined_pool = [original] + toxic_variants[-2:] + counter_variants[-2:]
 
         toxic_generated = False
         for _ in range(10):
             context = "\n".join(combined_pool[:n_context])
             toxic_prompt = improved_enrich_prompt(
                 f"Continuing the discussion (keywords: {', '.join(orig_keywords)}):\n{context}",
-                orig_keywords)
+                orig_keywords, tone="toxic")
             gen = clean_generation(generate_text(toxic_prompt, random.randint(20, 35)))
             if (len(gen.split()) >= 8 and gen not in toxic_variants
                     and keyword_overlap(orig_keywords, gen)
@@ -178,18 +180,53 @@ for _, row in tqdm(reviews_df.iterrows(), total=len(reviews_df)):
                 'toxic': fallback, 'fallback': True
             })
 
+        counter_generated = False
+        if len(toxic_variants) > 1:
+            latest = toxic_variants[-1]
+            context_samples = [latest] + toxic_variants[-3:-1]
+            counter_context = "\n".join(context_samples)
+            counter_prompt = improved_enrich_prompt(
+                f"Continuing the discussion (keywords: {', '.join(orig_keywords)}):\n{counter_context}",
+                orig_keywords, tone="counter")
+            for _ in range(10):
+                gen = clean_generation(generate_text(counter_prompt, random.randint(20, 35)))
+                if (len(gen.split()) >= 8 and gen not in counter_variants
+                        and keyword_overlap(orig_keywords, gen)
+                        and not any(bad in gen.lower() for bad in banned_words)
+                        and not id_pattern.search(gen)):
+                    counter_variants.append(gen)
+                    counter_rows.append({
+                        'page_id': page_id, 'level': lvl, 'counter': gen, 'fallback': False
+                    })
+                    counter_generated = True
+                    break
+
+        if not counter_generated:
+            fallback = clean_generation(generate_text(f"Respond calmly and respectfully to this aggressive comment: {latest}", 25))
+            counter_variants.append(fallback)
+            counter_rows.append({
+                'page_id': page_id, 'level': lvl, 'counter': fallback, 'fallback': True
+            })
+
         torch.cuda.empty_cache()
 
 result_df = pd.DataFrame(all_rows)
+counter_df = pd.DataFrame(counter_rows)
+
 result_df.to_csv(text_only_toxic_file, index=False)
 result_df['text'] = result_df['toxic']
 scores_df = pd.concat([result_df[['page_id', 'level']], batch_score_texts(result_df['text'].tolist())], axis=1)
 scores_df.to_csv(scores_only_toxic_file, index=False)
 
-end_time = datetime.now()
-with open(base_path + "generation_summary_ot.txt", "a", encoding="utf-8") as f:
-    f.write(f"Toxicity-Only Generation Start Time: {start_time}\n")
-    f.write(f"Toxicity-Only Generation End Time: {end_time}\n")
-    f.write(f"Duration: {end_time - start_time}\n")
+counter_df.to_csv(text_only_counter_file, index=False)
+counter_df['text'] = counter_df['counter']
+counter_scores_df = pd.concat([counter_df[['page_id', 'level']], batch_score_texts(counter_df['text'].tolist())], axis=1)
+counter_scores_df.to_csv(scores_only_counter_file, index=False)
 
-print("\u2705 Saved toxicity-only responses with batch scoring.")
+end_time = datetime.now()
+with open(base_path + "generation_summary_wc.txt", "a", encoding="utf-8") as f:
+    f.write(f"Toxicity-Only Generation Start Time: {start_time}")
+    f.write(f"Toxicity-Only Generation End Time: {end_time}")
+    f.write(f"Duration: {end_time - start_time}")
+
+print("✅ Saved toxic and counter responses with batch scoring.")

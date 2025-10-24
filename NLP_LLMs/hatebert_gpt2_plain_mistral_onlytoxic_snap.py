@@ -55,7 +55,7 @@ def keyword_overlap(keywords, response, min_match=2):
     return sum(1 for k in keywords if k in response_words) >= min_match
 
 def batch_score_texts(texts):
-    hate_scores, vader_scores, tb_scores, stanza_scores, pattern_scores = [], [], [], [], []
+    hate_scores, vader_scores, tb_scores, stanza_scores = [], [], [], []
     batch_size = 32
 
     for i in range(0, len(texts), batch_size):
@@ -78,10 +78,6 @@ def batch_score_texts(texts):
                 stanza_scores.append(doc.sentences[0].sentiment if doc.sentences else 1)
             except:
                 stanza_scores.append(1)
-            try:
-                pattern_scores.append(pattern_sentiment(t))
-            except:
-                pattern_scores.append((0.0, 0.0))
 
     return pd.DataFrame({
         'hatebert_score': hate_scores,
@@ -92,8 +88,7 @@ def batch_score_texts(texts):
         'polarity': [s[0] for s in tb_scores],
         'subjectivity': [s[1] for s in tb_scores],
         'stanza_sentiment': stanza_scores,
-        'pattern_polarity': [s[0] for s in pattern_scores],
-        'pattern_subjectivity': [s[1] for s in pattern_scores]
+        
     })
 
 def generate_text(prompt, max_new_tokens=None):
@@ -128,12 +123,12 @@ def improved_enrich_prompt(prompt, keywords):
 
 # ==================== TOXIC-ONLY GENERATION ====================
 base_path = "C:/FuzzyNov2024/toxicity_project/final_code_data/"
-reviews_df = pd.read_csv(base_path + "group_one_reviews.csv")
-target_levels_df = pd.read_csv(base_path + "target_levels.csv")
+reviews_df = pd.read_csv(base_path + "group_one_reviews_snap.csv")
+target_levels_df = pd.read_csv(base_path + "target_levels_snap.csv")
 target_map = dict(zip(target_levels_df.page_id, target_levels_df.Level))
 
-text_only_toxic_file = base_path + "text_output_escalated_MISTRAL_G1_OT.csv"
-scores_only_toxic_file = base_path + "score_output_escalated_MISTRAL_G1_OT.csv"
+text_only_toxic_file = base_path + "text_output_escalated_MISTRAL_G1_OT_snap.csv"
+scores_only_toxic_file = base_path + "score_output_escalated_MISTRAL_G1_OT_snap.csv"
 
 all_rows = []
 start_time = datetime.now()
@@ -188,8 +183,8 @@ scores_df.to_csv(scores_only_toxic_file, index=False)
 
 end_time = datetime.now()
 with open(base_path + "generation_summary_ot.txt", "a", encoding="utf-8") as f:
-    f.write(f"Toxicity-Only Generation Start Time: {start_time}\n")
-    f.write(f"Toxicity-Only Generation End Time: {end_time}\n")
-    f.write(f"Duration: {end_time - start_time}\n")
+    f.write(f"Toxicity-Only Generation Start Time: {start_time}")
+    f.write(f"Toxicity-Only Generation End Time: {end_time}")
+    f.write(f"Duration: {end_time - start_time}")
 
-print("\u2705 Saved toxicity-only responses with batch scoring.")
+print("✅ Saved toxicity-only responses with batch scoring.")
